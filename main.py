@@ -1,1 +1,156 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"pygments_lexer":"ipython3","nbconvert_exporter":"python","version":"3.6.4","file_extension":".py","codemirror_mode":{"name":"ipython","version":3},"name":"python","mimetype":"text/x-python"}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:18.918625Z\",\"iopub.execute_input\":\"2022-04-24T06:16:18.919313Z\",\"iopub.status.idle\":\"2022-04-24T06:16:18.925299Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:18.919210Z\",\"shell.execute_reply\":\"2022-04-24T06:16:18.924335Z\"}}\n#pip install bert-tensorflow==1.0.1\n\n# %% [markdown]\n# Importing the necessary library - RESNET is being used for image classification, so importing necessary libraries\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:18.931233Z\",\"iopub.execute_input\":\"2022-04-24T06:16:18.932417Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.132801Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:18.932388Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.132048Z\"}}\nimport numpy as np\nfrom sklearn.feature_extraction.text import TfidfVectorizer\nimport tensorflow as tf\nimport keras as K\nimport pandas as pd\nimport os\nfrom tensorflow.keras.applications.resnet import ResNet50\nfrom keras.models import Sequential\nfrom tensorflow.keras.applications.resnet import preprocess_input\nfrom tensorflow.keras.preprocessing import image\nfrom tensorflow.keras.applications.efficientnet import EfficientNetB3\n#from bert import tokenization\nfrom cuml.feature_extraction.text import TfidfVectorizer\nimport tensorflow_hub as hub\nimport cupy\nimport cudf\n#from transformers import BertTokenizer, TFBertModel\n\n# %% [code] {\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.134666Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.134947Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.148585Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.134910Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.147470Z\"}}\nfrom shutil import copyfile\ncopyfile(src = \"../input/tokenize/tokenization.py\", dst = \"../working/tokenization.py\")\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.149722Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.150865Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.259604Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.150830Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.258891Z\"}}\ntrain_data = pd.read_csv('../input/shopee-product-matching/train.csv')\ntrain_data\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.261491Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.262203Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.270209Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.262163Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.269389Z\"}}\nBATCH_SIZE=8\nIMAGE_SIZE=[512,512]\nSEED=42\nVERBOSE=1\nN_CLASSES=train_data['label_group'].nunique()\npath='Product_Matching_Resnet/train_images'\n\n##### For tf.dataset\nAUTO = tf.data.experimental.AUTOTUNE\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.271662Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.272413Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.280644Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.272255Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.279944Z\"}}\ndef decode_image(image_data):\n    image=tf.image.decode_jpeg(image_data,channels=3)\n    image=tf.image.resize(image,IMAGE_SIZE)\n    image=tf.cast(image,tf.float32)/255.0\n    return image\n\ndef read_image(image):\n    print('read')\n    image=tf.io.read_file(image)\n    image=decode_image(image)\n    return image\n\ndef get_dataset(image):\n    dataset = tf.data.Dataset.from_tensor_slices(image)\n    dataset = dataset.map(read_image, num_parallel_calls = AUTO)\n    dataset = dataset.batch(BATCH_SIZE)\n    dataset = dataset.prefetch(AUTO)\n    return dataset\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.282157Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.282565Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.301944Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.282530Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.301201Z\"}}\nclass ArcMarginProduct(tf.keras.layers.Layer):\n    def __init__(self,s=30,m=0.5,easy_margin=False,ls_eps=0.0,**kwargs):\n        super(ArcMarginProduct, self).__init__(**kwargs)\n        self.n_classes = n_classes\n        self.s=s\n        self.m=m\n        self.ls_eps=ls_eps\n        self.easy_margin=easy_margin\n        self.cos_m=tf.math.cos(m)\n        self.sin_m=tf.math.sin(m)\n        self.th=tf.math.cos(math.pi-m)\n        self.mm=tf.math.sin(math.pi-m)*m\n        \n    def get_config(self):\n        config=super().get_config().copy()\n        config.update({\n            'n_classes': self.n_classes,\n            's':self.s,\n            'm':self.m,\n            'ls_eps':self.ls_eps,\n            'easy_margin':self.easy_margin\n        })\n        return config\n    \n    def build(self,input_shape):\n        super(ArcMarginProduct,self).build(input_shape[0])\n        self.w=self.add_weight(\n            name='W',\n            shape=(int(input_shape[0][-1]),self.n_classes),\n            intializer='glorat_uniform',\n            dtype='float32',\n            trainable=True,\n            regularizer=None\n        )\n        \n    def call(self, inputs):\n        X,y=inputs\n        y=tf.cast(y,dtype=tf.int32)\n        cosine=tf.matmul(\n            tf.math.l2_normalize(X,axis=1),\n            tf.math.l2_normalize(self.w,axis=0)\n        )\n        sine=tf.math.sqrt(1.0-tf.math.pow(cosine,2))\n        phi=cosine*self.cos_m-sine*self.sine_m\n        if self.easy_margin:\n            phi = tf.where(cosine > 0, phi, cosine)\n        else:\n            phi=tf.where(cosine>self.th,phi,cosine-self.mm)\n        one_hot = tf.cast(\n            tf.one_hot(y,depth=self.n_classes),\n            dtype=cosine.dtype\n        )\n        if self.ls_eps > 0:\n            one_hot = (1-self.ls_eps)*one_hot + self.ls_eps/self.n_classes\n            \n        output=(one_hot*phi)+((1.0-one_hot)*cosine)\n        output*=s\n    \nprint(\"Ran till ArchMargin\")\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.303115Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.303988Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.318035Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.303959Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.317228Z\"}}\ndef image_embeddings(imgpath):\n    print(\"Using Regular Tensorflow Model For Predictions \\n\")\n    embeds=[]\n    \n    start_time = time.time()\n    margin=ArcMarginProduct(\n        n_classes=N_CLASSES,\n        s=30,\n        m=0.7,\n        name='head/arc_margin',\n        dtype='float_32'\n    )\n    \n    inp = tf.keras.layers.Input(shape=(*IMAGE_SIZE,3),name='inp1')\n    label=tf.keras.layers.Input(shape=(),name='inp2')\n    x= EfficientNetB3(weights = None, include_top = False)(inp)\n    x=tf.keras.layers.GlobalAveragePooling2D()(x)\n    x=margin([x,label])\n\n    output=tf.keras.softmax(dtype='float32')(x)\n    model=tf.keras.Model(inputs=[inp,label],outputs=[output])\n    \n    #loading saved weights\n    model.load_weights('EfficientNet_b3_15_0.0001_512_42_final.h5')\n    model=tf.keras.models.Model(inputs=model.input[0],outputs=model.layers[-4].output)\n    \n    chunk = 5000\n    iterator = np.arange(np.ceil(len(train_data)/chunk))\n    for j in terator:\n        a=int(j*chunk)\n        b=int((j+1)*chunk)\n        image_dataset=get_dataset(imagepath[a:b])\n        image_embeddings=model.predict(image_dataset)\n        embeds.append(image_embeddings)\n        \n    del model\n    image_embeddings = np.concatenate(embeds)\n    print(f'Our image embeddings shape is {image_embeddings.shape}')\n    del embeds\n    return image_embeddings\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:22:47.854439Z\",\"iopub.execute_input\":\"2022-04-24T06:22:47.854714Z\",\"iopub.status.idle\":\"2022-04-24T06:22:47.861041Z\",\"shell.execute_reply.started\":\"2022-04-24T06:22:47.854684Z\",\"shell.execute_reply\":\"2022-04-24T06:22:47.860209Z\"}}\n\"\"\"\n    def bert_encode(texts,tokenizer,max_len=512):\n    all_tokens=[]\n    all_masks=[]\n    all_segments=[]\n    \n    for txt in texts:\n        print(txt)\n        text=tokenizer.tokenize(txt)\n        print(max_len)\n        text=text[:max_len-2]\n        print(text)\n        input_seq=[\"[CLS]\"]+text+[\"[SEP]\"]\n        pad_len=max_len-len(input_seq)\n    \"\"\"\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:23:26.218749Z\",\"iopub.execute_input\":\"2022-04-24T06:23:26.219132Z\",\"iopub.status.idle\":\"2022-04-24T06:23:26.226049Z\",\"shell.execute_reply.started\":\"2022-04-24T06:23:26.219099Z\",\"shell.execute_reply\":\"2022-04-24T06:23:26.224405Z\"}}\n\"\"\"\n    def bert_get_text_embeddings(train_data,max_len=70):\n        embeds=[]\n    module_url = '../input/bert-en-uncased-l24-h1024-a16-1'\n    bert_layer = hub.KerasLayer(module_url,trainable=True)\n    vocab_file=bert_layer.resolved_object.vocab_file.asset_path.numpy()\n    do_lower_case=bert_layer.resolved_object.do_lower_case.numpy()\n    #print(do_lower_case)\n    tokenizer=tokenization.FullTokenizer(vocab_file,do_lower_case) #='../input/tokenize/tokenization.py',do_lower_case=True)\n    #text=bert_encode(train_data['title'].values,tokenizer,max_len=max_len)\n    print(tokenizer.tokenize('Hi! how are you'))\n\"\"\"\n\n# %% [code] {\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:16:22.342121Z\",\"iopub.execute_input\":\"2022-04-24T06:16:22.342666Z\",\"iopub.status.idle\":\"2022-04-24T06:16:22.349482Z\",\"shell.execute_reply.started\":\"2022-04-24T06:16:22.342632Z\",\"shell.execute_reply\":\"2022-04-24T06:16:22.348736Z\"}}\ndef get_text_embeddings(train_cudf):\n    model=TfidfVectorizer(stop_words='english',binary=True,max_features=25_000)\n    text_embeddings=model.fit_transform(train_cudf.title).toarray()\n    print(text_embeddings.shape)\n    return text_embeddings\n\n# %% [code] {\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:19:42.611316Z\",\"iopub.execute_input\":\"2022-04-24T06:19:42.611601Z\",\"iopub.status.idle\":\"2022-04-24T06:19:42.618321Z\",\"shell.execute_reply.started\":\"2022-04-24T06:19:42.611571Z\",\"shell.execute_reply\":\"2022-04-24T06:19:42.617634Z\"}}\ndef title_match(text_embeddings):\n    preds=[]\n    CHUNK=5000\n    \n    print('Finding similar titles')\n    iterator = np.arange(np.ceil(len(train_data)/CHUNK))\n    print(iterator)\n    for i in iterator:\n        a=int(i*CHUNK)\n        b=int((i+1)*CHUNK)\n        b = min(b,len(train_data))\n        \n        dist = cupy.matmul(text_embeddings,text_embeddings[a:b].T).T\n        \n        for j in range(b-a):\n            idx=cupy.where(dist[j,]>0.7)[0]\n            o=train_data.iloc[cupy.asnumpy(idx)].posting_id.values\n            preds.append(o)\n            \n    return preds\n\n# %% [code] {\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:22:08.288116Z\",\"iopub.execute_input\":\"2022-04-24T06:22:08.288935Z\",\"iopub.status.idle\":\"2022-04-24T06:22:08.339965Z\",\"shell.execute_reply.started\":\"2022-04-24T06:22:08.288896Z\",\"shell.execute_reply\":\"2022-04-24T06:22:08.339226Z\"}}\ntrain_cudf=cudf.DataFrame(train_data)\ntext_embeddings=get_text_embeddings(train_cudf)\n\n# %% [code] {\"jupyter\":{\"outputs_hidden\":false},\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:20:59.869158Z\",\"iopub.execute_input\":\"2022-04-24T06:20:59.869431Z\",\"iopub.status.idle\":\"2022-04-24T06:21:31.918146Z\",\"shell.execute_reply.started\":\"2022-04-24T06:20:59.869403Z\",\"shell.execute_reply\":\"2022-04-24T06:21:31.917317Z\"}}\ntext_pred = title_match(text_embeddings)\n\n# %% [code] {\"execution\":{\"iopub.status.busy\":\"2022-04-24T06:21:35.458340Z\",\"iopub.execute_input\":\"2022-04-24T06:21:35.458609Z\",\"iopub.status.idle\":\"2022-04-24T06:21:35.484302Z\",\"shell.execute_reply.started\":\"2022-04-24T06:21:35.458580Z\",\"shell.execute_reply\":\"2022-04-24T06:21:35.483622Z\"}}\ntrain_data['preds']=text_pred\ntrain_data[:5]\n\n# %% [code]\n","metadata":{"_uuid":"9d0c572e-48cb-43e1-9c00-aacdf7d8e77f","_cell_guid":"acb8cc32-9505-4b65-ae86-b2f11e49620f","collapsed":false,"jupyter":{"outputs_hidden":false},"trusted":true},"execution_count":null,"outputs":[]}]}
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+import tensorflow as tf
+import keras as K
+import pandas as pd
+import os
+from tensorflow.keras.applications.resnet import ResNet50
+from keras.models import Sequential
+from tensorflow.keras.applications.resnet import preprocess_input
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications.efficientnet import EfficientNetB3
+#from bert import tokenization
+from cuml.feature_extraction.text import TfidfVectorizer
+import tensorflow_hub as hub
+import cupy
+import cudf
+#from transformers import BertTokenizer, TFBertModel
+
+copyfile(src = "../input/tokenize/tokenization.py", dst = "../working/tokenization.py")
+
+train_data
+
+
+BATCH_SIZE=8
+IMAGE_SIZE=[512,512]
+SEED=42
+VERBOSE=1
+N_CLASSES=train_data['label_group'].nunique()
+path='Product_Matching_Resnet/train_images'
+
+##### For tf.dataset
+AUTO = tf.data.experimental.AUTOTUNE
+
+def decode_image(image_data):
+    image=tf.image.decode_jpeg(image_data,channels=3)
+    image=tf.image.resize(image,IMAGE_SIZE)
+    image=tf.cast(image,tf.float32)/255.0
+    return image
+
+def read_image(image):
+    print('read')
+    image=tf.io.read_file(image)
+    image=decode_image(image)
+    return image
+
+def get_dataset(image):
+    dataset = tf.data.Dataset.from_tensor_slices(image)
+    dataset = dataset.map(read_image, num_parallel_calls = AUTO)
+    dataset = dataset.batch(BATCH_SIZE)
+    dataset = dataset.prefetch(AUTO)
+    return dataset
+	
+def image_embeddings(imgpath):
+    print("Using Regular Tensorflow Model For Predictions \n")
+    embeds=[]
+    
+    start_time = time.time()
+    margin=ArcMarginProduct(
+        n_classes=N_CLASSES,
+        s=30,
+        m=0.7,
+        name='head/arc_margin',
+        dtype='float_32'
+    )
+    
+    inp = tf.keras.layers.Input(shape=(*IMAGE_SIZE,3),name='inp1')
+    label=tf.keras.layers.Input(shape=(),name='inp2')
+    x= EfficientNetB3(weights = None, include_top = False)(inp)
+    x=tf.keras.layers.GlobalAveragePooling2D()(x)
+    x=margin([x,label])
+
+    output=tf.keras.softmax(dtype='float32')(x)
+    model=tf.keras.Model(inputs=[inp,label],outputs=[output])
+    
+    #loading saved weights
+    model.load_weights('EfficientNet_b3_15_0.0001_512_42_final.h5')
+    model=tf.keras.models.Model(inputs=model.input[0],outputs=model.layers[-4].output)
+    
+    chunk = 5000
+    iterator = np.arange(np.ceil(len(train_data)/chunk))
+    for j in terator:
+        a=int(j*chunk)
+        b=int((j+1)*chunk)
+        image_dataset=get_dataset(imagepath[a:b])
+        image_embeddings=model.predict(image_dataset)
+        embeds.append(image_embeddings)
+        
+    del model
+    image_embeddings = np.concatenate(embeds)
+    print(f'Our image embeddings shape is {image_embeddings.shape}')
+    del embeds
+    return image_embeddings
+
+"""
+    def bert_encode(texts,tokenizer,max_len=512):
+    all_tokens=[]
+    all_masks=[]
+    all_segments=[]
+    
+    for txt in texts:
+        print(txt)
+        text=tokenizer.tokenize(txt)
+        print(max_len)
+        text=text[:max_len-2]
+        print(text)
+        input_seq=["[CLS]"]+text+["[SEP]"]
+        pad_len=max_len-len(input_seq)
+"""
+
+"""
+    def bert_get_text_embeddings(train_data,max_len=70):
+        embeds=[]
+    module_url = '../input/bert-en-uncased-l24-h1024-a16-1'
+    bert_layer = hub.KerasLayer(module_url,trainable=True)
+    vocab_file=bert_layer.resolved_object.vocab_file.asset_path.numpy()
+    do_lower_case=bert_layer.resolved_object.do_lower_case.numpy()
+    #print(do_lower_case)
+    tokenizer=tokenization.FullTokenizer(vocab_file,do_lower_case) #='../input/tokenize/tokenization.py',do_lower_case=True)
+    #text=bert_encode(train_data['title'].values,tokenizer,max_len=max_len)
+    print(tokenizer.tokenize('Hi! how are you'))
+"""
+
+def get_text_embeddings(train_cudf):
+    model=TfidfVectorizer(stop_words='english',binary=True,max_features=25_000)
+    text_embeddings=model.fit_transform(train_cudf.title).toarray()
+    print(text_embeddings.shape)
+    return text_embeddings
+
+def title_match(text_embeddings):
+    preds=[]
+    CHUNK=5000
+    
+    print('Finding similar titles')
+    iterator = np.arange(np.ceil(len(train_data)/CHUNK))
+    print(iterator)
+    for i in iterator:
+        a=int(i*CHUNK)
+        b=int((i+1)*CHUNK)
+        b = min(b,len(train_data))
+        
+        dist = cupy.matmul(text_embeddings,text_embeddings[a:b].T).T
+        
+        for j in range(b-a):
+            idx=cupy.where(dist[j,]>0.7)[0]
+            o=train_data.iloc[cupy.asnumpy(idx)].posting_id.values
+            preds.append(o)
+            
+    return preds
+
+train_cudf=cudf.DataFrame(train_data)
+text_embeddings=get_text_embeddings(train_cudf)
+
+text_pred = title_match(text_embeddings)
+
+train_data['preds']=text_pred
+train_data[:5]
