@@ -44,7 +44,7 @@ This data was collected from one of the competitions hosted at Kaggle.com. It co
 </p>
 
 ### Model -
-2 separate models were built and the results from them combined to produce the final output. 
+This models are trained on Keras API of tensorflow. Two separate models were built and the results from them combined to produce the final output. 
 - Title Similarity - Used Pretrained BERT model to find similarity scores of the text embeddings of the titles. Accuracy attained was 0.18 on validation data.
 BERT Model - https://tfhub.dev/tensorflow/bert_en_uncased_L-24_H-1024_A-16/1?tf-hub-format=compressed
 
