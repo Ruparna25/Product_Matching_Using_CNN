@@ -45,10 +45,15 @@ This data was collected from one of the competitions hosted at Kaggle.com. It co
 
 ### Model -
 2 separate models were built and the results from them combined to produce the final output. 
-- Title Similarity - Finding title which are close to each other, for this 2 options were tried one - first one was a simple distance measurement between products of same label_group. This is simple approach, where the cosine similarity was used to measure the distance between the text embeddings.
-
-
-- Image Matching
-
-
+- Title Similarity - Used Pretrained BERT model to find similarity scores of the text embeddings of the titles. Accuracy attained was 0.18 on validation data.
 BERT Model - https://tfhub.dev/tensorflow/bert_en_uncased_L-24_H-1024_A-16/1?tf-hub-format=compressed
+
+- Image Similarity -  
+Used Pretrained EfficientNet model, all the layers of this model was kept frozen, except the top layer. Before training the last layer with our data, another GlobalAveragePooling2D layer was added on top of that a Softmax layer was added. The obtained weights were used for model prediction.
+
+### Final Result -
+As the final step the combined text embeddings from the BERT model are passed through a KNN model to find the nearest neighbor based on the title data. Similarly, the combined image embeddings obtained from training the image similarity are passed through a KNN model to find the nearest neighbor. The prediction from the text data and the predictions from the image data are combined to produce the final output. The evaluation metric used was **F1 score**, as per Kaggle competition requirement.
+
+F1 = 2 (precision * recall)/(precision + recall)
+
+Note - Due to resource limitation was not able to train the model with full array of pixel of images, so we attained a low accuracy
